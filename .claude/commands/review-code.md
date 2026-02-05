@@ -116,7 +116,13 @@ After completing the review, explicitly state:
 - [ ] Map changed code to relevant AMP v5.0 spec sections (cite chapter/section)
 - [ ] If implementation deviates from spec, document the deviation and rationale
 - [ ] If spec is ambiguous, note the interpretation chosen and flag for discussion
-- [ ] Reference materials: `research/lab/LAB_ARCHIVE/` for spec details
+- [ ] Reference materials:
+  - Local: `~/Projects/agentries-rfcs/`
+  - GitHub: https://github.com/agentries/rfcs
+  - `001-agent-messaging-protocol.md` — core protocol spec
+  - `002-transport-bindings.md` — WebSocket/HTTP transport bindings
+  - `AMP-FIRST-PRINCIPLES.md` — design principles
+  - `DECISION-LOG.md` — architecture decisions
 
 ---
 
