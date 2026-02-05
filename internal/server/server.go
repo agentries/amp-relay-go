@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/openclaw/amp-relay-go/internal/protocol"
@@ -62,7 +63,7 @@ type RelayServer struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
-	running bool
+	running atomic.Bool
 }
 
 // ClientInfo holds information about a connected client
@@ -93,7 +94,7 @@ func NewRelayServer(config *Config) *RelayServer {
 
 // Start starts the relay server
 func (s *RelayServer) Start() error {
-	if s.running {
+	if s.running.Load() {
 		return fmt.Errorf("server already running")
 	}
 
@@ -106,7 +107,7 @@ func (s *RelayServer) Start() error {
 		return fmt.Errorf("failed to start WebSocket server: %w", err)
 	}
 
-	s.running = true
+	s.running.Store(true)
 
 	// Start background tasks
 	s.wg.Add(1)
@@ -118,7 +119,7 @@ func (s *RelayServer) Start() error {
 
 // Stop gracefully stops the relay server
 func (s *RelayServer) Stop() error {
-	if !s.running {
+	if !s.running.Load() {
 		return nil
 	}
 
@@ -137,7 +138,7 @@ func (s *RelayServer) Stop() error {
 	// Wait for background tasks
 	s.wg.Wait()
 
-	s.running = false
+	s.running.Store(false)
 	log.Println("AMP Relay Server stopped")
 	return nil
 }
@@ -165,7 +166,7 @@ func (s *RelayServer) GetStats() ServerStats {
 	return ServerStats{
 		ConnectedClients: clientCount,
 		Address:          s.config.ListenAddr,
-		Running:          s.running,
+		Running:          s.running.Load(),
 	}
 }
 

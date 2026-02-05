@@ -46,17 +46,37 @@ func TestWebSocketServer_SetMessageHandler(t *testing.T) {
 }
 
 func TestWebSocketServer_StartStop(t *testing.T) {
-	// Note: This test is skipped because the current implementation uses
-	// global http.HandleFunc which causes conflicts when running multiple tests
-	// in the same process. This is a known limitation.
-	t.Skip("Skipping: global HTTP handler registration limitation")
+	server := NewWebSocketServer(":0")
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if !server.running.Load() {
+		t.Error("Server should be running after Start")
+	}
+
+	err = server.Stop()
+	if err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+	if server.running.Load() {
+		t.Error("Server should not be running after Stop")
+	}
 }
 
 func TestWebSocketServer_Start_AlreadyRunning(t *testing.T) {
-	// Note: This test is skipped because the current implementation uses
-	// global http.HandleFunc which causes conflicts when running multiple servers
-	// in the same process. This is a known limitation.
-	t.Skip("Skipping: global HTTP handler registration limitation")
+	server := NewWebSocketServer(":0")
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("First Start failed: %v", err)
+	}
+	defer server.Stop()
+
+	// Second start should be no-op (returns nil)
+	err = server.Start()
+	if err != nil {
+		t.Errorf("Second Start should not error: %v", err)
+	}
 }
 
 func TestWebSocketServer_Stop_NotRunning(t *testing.T) {
@@ -70,10 +90,29 @@ func TestWebSocketServer_Stop_NotRunning(t *testing.T) {
 }
 
 func TestWebSocketServer_HealthEndpoint(t *testing.T) {
-	// Note: This test is skipped because the current implementation uses
-	// global http.HandleFunc which causes conflicts when running multiple tests
-	// in the same process. This is a known limitation.
-	t.Skip("Skipping: global HTTP handler registration limitation")
+	server := NewWebSocketServer(":0")
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop()
+
+	// Get the actual listen address
+	addr := server.server.Addr
+	if addr == ":0" {
+		// Server is listening, but we need the actual address.
+		// Use the handler directly for testing.
+		req := httptest.NewRequest("GET", "/health", nil)
+		w := httptest.NewRecorder()
+		server.handleHealth(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), `"status":"ok"`) {
+			t.Errorf("Expected health response, got %s", w.Body.String())
+		}
+	}
 }
 
 func TestWebSocketServer_WebSocketConnection(t *testing.T) {
@@ -137,7 +176,7 @@ func TestWebSocketServer_Broadcast(t *testing.T) {
 	server.Broadcast([]byte("test broadcast"))
 
 	// Verify running status
-	if server.running {
+	if server.running.Load() {
 		t.Error("Server should not be running yet")
 	}
 }
@@ -288,12 +327,25 @@ func TestWebSocketServer_ContextCancellation(t *testing.T) {
 	}
 }
 
-// Integration test that starts a real WebSocket server
 func TestWebSocketServer_Integration(t *testing.T) {
-	// Note: This test is skipped because the current implementation uses
-	// global http.HandleFunc which causes conflicts when running multiple tests
-	// with server in the same process. This is a known limitation.
-	t.Skip("Skipping: global HTTP handler registration limitation")
+	server := NewWebSocketServer(":0")
+	handler := func(clientID string, data []byte) error {
+		return nil
+	}
+	server.SetMessageHandler(handler)
+
+	err := server.Start()
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop()
+
+	if !server.running.Load() {
+		t.Error("Server should be running")
+	}
+	if server.GetClientCount() != 0 {
+		t.Errorf("Expected 0 clients, got %d", server.GetClientCount())
+	}
 }
 
 func BenchmarkWebSocketServer_Broadcast(b *testing.B) {
