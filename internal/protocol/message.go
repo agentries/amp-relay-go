@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"crypto/rand"
+	"math/big"
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
@@ -87,12 +89,19 @@ func generateID() string {
 	return "msg_" + time.Now().UTC().Format("20060102150405") + "_" + getRandomString(8)
 }
 
-// getRandomString generates a random string of specified length
+// getRandomString generates a cryptographically secure random string of specified length
 func getRandomString(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, length)
+	charsetLen := big.NewInt(int64(len(charset)))
 	for i := range b {
-		b[i] = charset[i%len(charset)]
+		n, err := rand.Int(rand.Reader, charsetLen)
+		if err != nil {
+			// Fallback to less secure but still functional approach
+			b[i] = charset[i%len(charset)]
+			continue
+		}
+		b[i] = charset[n.Int64()]
 	}
-	return string(b)[:length]
+	return string(b)
 }

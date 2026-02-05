@@ -64,21 +64,29 @@ func (ms *MemoryStore) Save(message *protocol.Message, ttl time.Duration) error 
 // Get retrieves a message by ID
 func (ms *MemoryStore) Get(id string) (*protocol.Message, error) {
 	ms.mutex.RLock()
-	defer ms.mutex.RUnlock()
-
 	stored, exists := ms.messages[id]
 	if !exists {
+		ms.mutex.RUnlock()
 		return nil, nil // Return nil if not found
 	}
 
 	// Check if message has expired
 	if !stored.expiry.IsZero() && time.Now().After(stored.expiry) {
-		// Message has expired, remove it
-		delete(ms.messages, id)
+		ms.mutex.RUnlock()
+		// Upgrade to write lock to remove expired message
+		ms.mutex.Lock()
+		// Double-check the message still exists and is still expired
+		stored, exists = ms.messages[id]
+		if exists && !stored.expiry.IsZero() && time.Now().After(stored.expiry) {
+			delete(ms.messages, id)
+		}
+		ms.mutex.Unlock()
 		return nil, nil
 	}
 
-	return stored.message, nil
+	msg := stored.message
+	ms.mutex.RUnlock()
+	return msg, nil
 }
 
 // Delete removes a message by ID

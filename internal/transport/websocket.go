@@ -3,7 +3,10 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 	"log"
+	"math/big"
 	"net/http"
 	"sync"
 	"time"
@@ -218,7 +221,7 @@ func (ws *WebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 func (ws *WebSocketServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok","clients":` + string(rune(ws.GetClientCount()+48)) + `}`))
+	w.Write([]byte(fmt.Sprintf(`{"status":"ok","clients":%d}`, ws.GetClientCount())))
 }
 
 // runHub manages client registration/unregistration and broadcasting
@@ -361,12 +364,19 @@ func generateClientID() string {
 	return "client_" + time.Now().Format("20060102150405") + "_" + randomString(8)
 }
 
-// randomString generates a random string
+// randomString generates a cryptographically secure random string
 func randomString(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, length)
+	charsetLen := big.NewInt(int64(len(charset)))
 	for i := range b {
-		b[i] = charset[i%len(charset)]
+		n, err := rand.Int(rand.Reader, charsetLen)
+		if err != nil {
+			// Fallback to less secure but still functional approach
+			b[i] = charset[i%len(charset)]
+			continue
+		}
+		b[i] = charset[n.Int64()]
 	}
-	return string(b)[:length]
+	return string(b)
 }
