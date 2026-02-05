@@ -117,11 +117,14 @@ After completing the review, explicitly state:
 - [ ] If implementation deviates from spec, document the deviation and rationale
 - [ ] If spec is ambiguous, note the interpretation chosen and flag for discussion
 - [ ] Reference materials — https://github.com/agentries/rfcs
-  - `001-agent-messaging-protocol.md` — core protocol spec
-  - `002-transport-bindings.md` — WebSocket/HTTP transport bindings
-  - `AMP-FIRST-PRINCIPLES.md` — design principles
-  - `DECISION-LOG.md` — architecture decisions
-  - Local clone: `git clone https://github.com/agentries/rfcs ../agentries-rfcs`
+  - Before review, ensure local RFC repo exists:
+    1. Check: `ls ../agentries-rfcs/` — if directory exists, proceed
+    2. If not: `git clone https://github.com/agentries/rfcs ../agentries-rfcs`
+  - Required reading per review scope:
+    - `001-agent-messaging-protocol.md` — core protocol spec (**always read**)
+    - `002-transport-bindings.md` — WebSocket/HTTP transport bindings (**read when reviewing transport layer**)
+    - `AMP-FIRST-PRINCIPLES.md` — design principles
+    - `DECISION-LOG.md` — architecture decisions
 
 ---
 
