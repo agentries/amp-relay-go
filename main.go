@@ -1,29 +1,44 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/openclaw/amp-relay-go/internal/auth"
+	"github.com/openclaw/amp-relay-go/internal/config"
 	"github.com/openclaw/amp-relay-go/internal/protocol"
 	"github.com/openclaw/amp-relay-go/internal/server"
+	"github.com/openclaw/amp-relay-go/internal/storage"
 )
 
 func main() {
-	fmt.Println("╔════════════════════════════════════════╗")
-	fmt.Println("║     AMP Relay Server v5.0 (Go)         ║")
-	fmt.Println("║     Jason 🍎 Labs Reference Impl       ║")
-	fmt.Println("╚════════════════════════════════════════╝")
-	fmt.Println()
+	log.Println("AMP Relay Server v5.0 (Go) — Jason Labs Reference Impl")
 
-	// Create default configuration
-	config := server.DefaultConfig()
-	config.ListenAddr = ":8080"
+	// Load configuration (file path from AMP_CONFIG_PATH env, or defaults)
+	configPath := os.Getenv("AMP_CONFIG_PATH")
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Create authenticator based on config
+	authIntegration := auth.NewIntegrationPoint(cfg.Security.EnableAuth)
+
+	// Build server config from loaded config
+	srvConfig := &server.Config{
+		ListenAddr:         cfg.Server.Address,
+		AllowedOrigins:     cfg.Security.AllowedOrigins,
+		Authenticator:      authIntegration.Authenticator,
+		Storage:            storage.NewMemoryStore(),
+		DefaultTTL:         cfg.Storage.DefaultTTL,
+		MaxPayloadSize:     cfg.Server.MaxPayloadSize,
+		RateLimitPerMinute: cfg.Security.RateLimitPerMinute,
+	}
 
 	// Create and configure server
-	srv := server.NewRelayServer(config)
+	srv := server.NewRelayServer(srvConfig)
 
 	// Register example routes
 	srv.RegisterRoute("ping", handlePing)
@@ -34,23 +49,20 @@ func main() {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 
+	log.Printf("Server running on %s", srvConfig.ListenAddr)
+
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	fmt.Printf("Server running on %s\n", config.ListenAddr)
-	fmt.Println("Press Ctrl+C to stop")
-	fmt.Println()
-
 	<-sigChan
-	fmt.Println("\nShutdown signal received...")
 
-	// Graceful shutdown
+	log.Println("Shutdown signal received...")
+
 	if err := srv.Stop(); err != nil {
 		log.Printf("Error during shutdown: %v", err)
 	}
 
-	fmt.Println("Server stopped gracefully")
+	log.Println("Server stopped gracefully")
 }
 
 // handlePing responds to ping requests
@@ -58,9 +70,8 @@ func handlePing(msg *protocol.Message) (*protocol.Message, error) {
 	response := protocol.NewMessage(
 		protocol.MessageTypeResponse,
 		"relay-server",
-		msg.Source,
-		"ping",
-		[]byte(`{"status":"ok","message":"pong"}`),
+		msg.From,
+		map[string]string{"status": "ok", "message": "pong"},
 	)
 	return response, nil
 }
@@ -70,9 +81,8 @@ func handleEcho(msg *protocol.Message) (*protocol.Message, error) {
 	response := protocol.NewMessage(
 		protocol.MessageTypeResponse,
 		"relay-server",
-		msg.Source,
-		"echo",
-		msg.Payload,
+		msg.From,
+		msg.Body,
 	)
 	return response, nil
 }
