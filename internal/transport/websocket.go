@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -44,7 +45,7 @@ type WebSocketServer struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
-	running bool
+	running atomic.Bool
 
 	// Message handler callback
 	messageHandler MessageHandler
@@ -84,24 +85,25 @@ func (ws *WebSocketServer) SetMessageHandler(handler MessageHandler) {
 
 // Start starts the WebSocket server
 func (ws *WebSocketServer) Start() error {
-	if ws.running {
+	if ws.running.Load() {
 		return nil
 	}
 
-	ws.running = true
+	ws.running.Store(true)
 
 	// Start the hub goroutine for managing connections
 	ws.wg.Add(1)
 	go ws.runHub()
 
-	// Setup HTTP handlers
-	http.HandleFunc("/ws", ws.handleWebSocket)
-	http.HandleFunc("/health", ws.handleHealth)
+	// Setup HTTP handlers on a local mux
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", ws.handleWebSocket)
+	mux.HandleFunc("/health", ws.handleHealth)
 
 	// Create HTTP server
 	ws.server = &http.Server{
 		Addr:    ws.Addr,
-		Handler: nil,
+		Handler: mux,
 	}
 
 	log.Printf("WebSocket server starting on %s", ws.Addr)
@@ -120,7 +122,7 @@ func (ws *WebSocketServer) Start() error {
 
 // Stop gracefully stops the WebSocket server
 func (ws *WebSocketServer) Stop() error {
-	if !ws.running {
+	if !ws.running.Load() {
 		return nil
 	}
 
@@ -148,7 +150,7 @@ func (ws *WebSocketServer) Stop() error {
 	// Wait for all goroutines to finish
 	ws.wg.Wait()
 
-	ws.running = false
+	ws.running.Store(false)
 	log.Println("WebSocket server stopped")
 	return nil
 }

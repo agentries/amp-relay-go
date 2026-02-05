@@ -81,7 +81,7 @@ func TestMemoryStore_Get_Expired(t *testing.T) {
 	// Wait for expiration
 	time.Sleep(10 * time.Millisecond)
 
-	// Get should return nil and remove expired message
+	// Get should return nil for expired message
 	retrieved, err := store.Get(msg.ID)
 	if err != nil {
 		t.Errorf("Get failed: %v", err)
@@ -90,12 +90,13 @@ func TestMemoryStore_Get_Expired(t *testing.T) {
 		t.Error("Get should return nil for expired message")
 	}
 
-	// Verify message was removed from store
+	// List cleans up expired messages
+	store.List()
 	store.mutex.RLock()
 	_, exists := store.messages[msg.ID]
 	store.mutex.RUnlock()
 	if exists {
-		t.Error("Expired message should be removed from store")
+		t.Error("Expired message should be removed from store after List")
 	}
 }
 

@@ -3,7 +3,10 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -110,6 +113,7 @@ const (
 // TODO: Replace with real Agentries integration
 // See: https://docs.agentries.io/
 type PlaceholderAuthenticator struct {
+	mu sync.RWMutex
 	// In-memory token storage for placeholder implementation
 	tokens map[string]*TokenClaims
 	// Token validity duration
@@ -152,7 +156,10 @@ func (p *PlaceholderAuthenticator) Verify(ctx context.Context, did string, proof
 		TokenID:   tokenID,
 		Extra:     make(map[string]interface{}),
 	}
+
+	p.mu.Lock()
 	p.tokens[tokenID] = claims
+	p.mu.Unlock()
 
 	return &VerificationResult{
 		DID:        did,
@@ -168,13 +175,18 @@ func (p *PlaceholderAuthenticator) Verify(ctx context.Context, did string, proof
 
 // ValidateToken validates a token in the placeholder implementation
 func (p *PlaceholderAuthenticator) ValidateToken(ctx context.Context, token string) (*TokenClaims, error) {
+	p.mu.RLock()
 	claims, exists := p.tokens[token]
+	p.mu.RUnlock()
+
 	if !exists {
 		return nil, &AuthError{Code: ErrCodeInvalidToken, Message: "token not found"}
 	}
 
 	if claims.IsExpired() {
+		p.mu.Lock()
 		delete(p.tokens, token)
+		p.mu.Unlock()
 		return nil, &AuthError{Code: ErrCodeExpiredToken, Message: "token has expired"}
 	}
 
@@ -188,9 +200,6 @@ func (p *PlaceholderAuthenticator) RefreshToken(ctx context.Context, token strin
 		return "", err
 	}
 
-	// Revoke old token
-	delete(p.tokens, token)
-
 	// Create new token
 	newTokenID := generateTokenID()
 	now := time.Now()
@@ -203,13 +212,21 @@ func (p *PlaceholderAuthenticator) RefreshToken(ctx context.Context, token strin
 		TokenID:   newTokenID,
 		Extra:     claims.Extra,
 	}
+
+	// Revoke old token and store new one atomically
+	p.mu.Lock()
+	delete(p.tokens, token)
 	p.tokens[newTokenID] = newClaims
+	p.mu.Unlock()
 
 	return newTokenID, nil
 }
 
 // RevokeToken revokes a token in the placeholder implementation
 func (p *PlaceholderAuthenticator) RevokeToken(ctx context.Context, token string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if _, exists := p.tokens[token]; !exists {
 		return &AuthError{Code: ErrCodeInvalidToken, Message: "token not found"}
 	}
@@ -223,10 +240,13 @@ func (p *PlaceholderAuthenticator) SetTokenDuration(duration time.Duration) {
 	p.tokenDuration = duration
 }
 
-// generateTokenID generates a unique token ID
+// generateTokenID generates a cryptographically secure unique token ID
 func generateTokenID() string {
-	// Simple token generation - replace with secure random generation in production
-	return fmt.Sprintf("token_%d", time.Now().UnixNano())
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return "token_" + hex.EncodeToString(b)
 }
 
 // NoOpAuthenticator is an authenticator that does no verification
@@ -279,16 +299,20 @@ func NewAuthMiddleware(auth Authenticator) *AuthMiddleware {
 	return &AuthMiddleware{Authenticator: auth}
 }
 
+type contextKey struct{}
+
+var didContextKey contextKey
+
 // ExtractDIDFromContext extracts the DID from a context
 // This is used after authentication middleware has run
 func ExtractDIDFromContext(ctx context.Context) (string, bool) {
-	did, ok := ctx.Value("did").(string)
+	did, ok := ctx.Value(didContextKey).(string)
 	return did, ok
 }
 
 // ContextWithDID adds a DID to a context
 func ContextWithDID(ctx context.Context, did string) context.Context {
-	return context.WithValue(ctx, "did", did)
+	return context.WithValue(ctx, didContextKey, did)
 }
 
 // IntegrationPoint defines how auth integrates with the server
