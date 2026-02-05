@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/openclaw/amp-relay-go/internal/auth"
 	"github.com/openclaw/amp-relay-go/internal/protocol"
 	"github.com/openclaw/amp-relay-go/internal/storage"
 	"github.com/openclaw/amp-relay-go/internal/transport"
@@ -18,6 +19,10 @@ import (
 type Config struct {
 	// Network configuration
 	ListenAddr string
+
+	// Security
+	AllowedOrigins []string
+	Authenticator  auth.Authenticator
 
 	// Storage configuration
 	Storage storage.MessageStore
@@ -34,6 +39,8 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		ListenAddr:         ":8080",
+		AllowedOrigins:     nil, // nil = allow all (dev mode)
+		Authenticator:      auth.NewNoOpAuthenticator(),
 		Storage:            storage.NewMemoryStore(),
 		DefaultTTL:         5 * time.Minute,
 		MaxPayloadSize:     512 * 1024, // 512KB
@@ -99,7 +106,7 @@ func (s *RelayServer) Start() error {
 	}
 
 	// Create WebSocket server
-	s.wsServer = transport.NewWebSocketServer(s.config.ListenAddr)
+	s.wsServer = transport.NewWebSocketServer(s.config.ListenAddr, s.config.AllowedOrigins)
 	s.wsServer.SetMessageHandler(s.handleWebSocketMessage)
 
 	// Start WebSocket server
@@ -186,6 +193,17 @@ func (s *RelayServer) handleWebSocketMessage(clientID string, data []byte) error
 		return fmt.Errorf("invalid message format: %w", err)
 	}
 
+	// Authenticate: verify the sender's DID
+	if msg.From != "" {
+		ctx := context.Background()
+		_, err := s.config.Authenticator.Verify(ctx, msg.From, nil)
+		if err != nil {
+			log.Printf("Auth failed for client %s (DID: %s): %v", clientID, msg.From, err)
+			s.sendErrorResponse(clientID, msg, "AUTH_FAILED", fmt.Sprintf("authentication failed: %v", err))
+			return fmt.Errorf("authentication failed: %w", err)
+		}
+	}
+
 	// Update client info
 	s.updateClientActivity(clientID)
 
@@ -196,8 +214,8 @@ func (s *RelayServer) handleWebSocketMessage(clientID string, data []byte) error
 	case protocol.MessageTypeEvent:
 		return s.handleEvent(clientID, msg)
 	default:
-		log.Printf("Unsupported message type from client %s: %s", clientID, msg.Type)
-		return fmt.Errorf("unsupported message type: %s", msg.Type)
+		log.Printf("Unsupported message type from client %s: 0x%02x", clientID, msg.Type)
+		return fmt.Errorf("unsupported message type: 0x%02x", msg.Type)
 	}
 }
 
@@ -206,7 +224,7 @@ func (s *RelayServer) handleRequest(clientID string, msg *protocol.Message) erro
 	// Store the message
 	ttl := s.config.DefaultTTL
 	if msg.TTL > 0 {
-		ttl = time.Duration(msg.TTL) * time.Second
+		ttl = time.Duration(msg.TTL) * time.Millisecond
 	}
 
 	if err := s.store.Save(msg, ttl); err != nil {
@@ -214,15 +232,16 @@ func (s *RelayServer) handleRequest(clientID string, msg *protocol.Message) erro
 		return s.sendErrorResponse(clientID, msg, "storage_error", "Failed to store message")
 	}
 
-	// Route the message if a handler exists
+	// Route the message if a handler exists — action is extracted from Body
+	action := extractAction(msg)
 	s.routesMu.RLock()
-	handler, exists := s.routes[msg.Action]
+	handler, exists := s.routes[action]
 	s.routesMu.RUnlock()
 
 	if exists {
 		response, err := handler(msg)
 		if err != nil {
-			log.Printf("Route handler error for action %s: %v", msg.Action, err)
+			log.Printf("Route handler error for action %s: %v", action, err)
 			return s.sendErrorResponse(clientID, msg, "handler_error", err.Error())
 		}
 
@@ -233,7 +252,7 @@ func (s *RelayServer) handleRequest(clientID string, msg *protocol.Message) erro
 	}
 
 	// Forward to destination if specified
-	if msg.Destination != "" && msg.Destination != "relay-server" {
+	if msg.To != "" && msg.To != "relay-server" {
 		return s.forwardMessage(msg)
 	}
 
@@ -245,7 +264,7 @@ func (s *RelayServer) handleEvent(clientID string, msg *protocol.Message) error 
 	// Store event
 	ttl := s.config.DefaultTTL
 	if msg.TTL > 0 {
-		ttl = time.Duration(msg.TTL) * time.Second
+		ttl = time.Duration(msg.TTL) * time.Millisecond
 	}
 
 	if err := s.store.Save(msg, ttl); err != nil {
@@ -278,7 +297,7 @@ func (s *RelayServer) forwardMessage(msg *protocol.Message) error {
 	// Try to find the destination client
 	s.clientsMu.RLock()
 	for clientID, info := range s.clients {
-		if info.DID == msg.Destination {
+		if info.DID == msg.To {
 			s.clientsMu.RUnlock()
 			return s.forwardMessageToClient(clientID, msg)
 		}
@@ -286,7 +305,7 @@ func (s *RelayServer) forwardMessage(msg *protocol.Message) error {
 	s.clientsMu.RUnlock()
 
 	// Destination not found, message stays in store for later retrieval
-	log.Printf("Destination %s not connected, message stored for later delivery", msg.Destination)
+	log.Printf("Destination %s not connected, message stored for later delivery", msg.To)
 	return nil
 }
 
@@ -305,8 +324,8 @@ func (s *RelayServer) forwardMessageToClient(clientID string, msg *protocol.Mess
 }
 
 // sendResponse sends a response message
-func (s *RelayServer) sendResponse(clientID string, requestID string, response *protocol.Message) error {
-	response.CorrelationID = requestID
+func (s *RelayServer) sendResponse(clientID string, requestID []byte, response *protocol.Message) error {
+	response.ReplyTo = requestID
 	response.Type = protocol.MessageTypeResponse
 
 	data, err := response.CBORMarshal()
@@ -326,12 +345,10 @@ func (s *RelayServer) sendErrorResponse(clientID string, originalMsg *protocol.M
 	errorMsg := protocol.NewMessage(
 		protocol.MessageTypeError,
 		"relay-server",
-		originalMsg.Source,
-		"error",
-		[]byte(message),
+		originalMsg.From,
+		map[string]string{"error_code": code, "message": message},
 	)
-	errorMsg.CorrelationID = originalMsg.ID
-	errorMsg.AddMetadata("error_code", code)
+	errorMsg.ReplyTo = originalMsg.ID
 
 	data, err := errorMsg.CBORMarshal()
 	if err != nil {
@@ -343,6 +360,21 @@ func (s *RelayServer) sendErrorResponse(clientID string, originalMsg *protocol.M
 	}
 
 	return nil
+}
+
+// extractAction extracts the action string from the message Body
+func extractAction(msg *protocol.Message) string {
+	if m, ok := msg.Body.(map[string]interface{}); ok {
+		if action, ok := m["action"].(string); ok {
+			return action
+		}
+	}
+	if m, ok := msg.Body.(map[interface{}]interface{}); ok {
+		if action, ok := m["action"].(string); ok {
+			return action
+		}
+	}
+	return ""
 }
 
 // updateClientActivity updates client activity timestamp

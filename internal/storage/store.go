@@ -53,7 +53,7 @@ func (ms *MemoryStore) Save(message *protocol.Message, ttl time.Duration) error 
 		expiry = time.Time{}
 	}
 
-	ms.messages[message.ID] = &storedMessage{
+	ms.messages[message.IDHex()] = &storedMessage{
 		message: message,
 		expiry:  expiry,
 	}

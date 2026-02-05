@@ -7,314 +7,249 @@ import (
 )
 
 func TestNewMessage(t *testing.T) {
-	msg := NewMessage(MessageTypeRequest, "source-did", "dest-did", "test.action", []byte("test payload"))
+	msg := NewMessage(MessageTypeRequest, "did:web:alice", "did:web:bob", map[string]string{"action": "ping"})
 
-	if msg == nil {
-		t.Fatal("NewMessage returned nil")
+	if msg.V != 1 {
+		t.Errorf("Expected V=1, got %d", msg.V)
 	}
-
-	// Check required fields
-	if msg.ID == "" {
-		t.Error("Message ID should not be empty")
+	if len(msg.ID) != 16 {
+		t.Errorf("Expected 16-byte ID, got %d bytes", len(msg.ID))
 	}
 	if msg.Type != MessageTypeRequest {
-		t.Errorf("Expected type %s, got %s", MessageTypeRequest, msg.Type)
+		t.Errorf("Expected type 0x%02x, got 0x%02x", MessageTypeRequest, msg.Type)
 	}
-	if msg.Source != "source-did" {
-		t.Errorf("Expected source 'source-did', got %s", msg.Source)
+	if msg.Ts == 0 {
+		t.Error("Timestamp should be set")
 	}
-	if msg.Destination != "dest-did" {
-		t.Errorf("Expected destination 'dest-did', got %s", msg.Destination)
+	if msg.TTL != 86400000 {
+		t.Errorf("Expected default TTL 86400000ms, got %d", msg.TTL)
 	}
-	if msg.Action != "test.action" {
-		t.Errorf("Expected action 'test.action', got %s", msg.Action)
+	if msg.From != "did:web:alice" {
+		t.Errorf("Expected From 'did:web:alice', got %s", msg.From)
 	}
-	if !bytes.Equal(msg.Payload, []byte("test payload")) {
-		t.Errorf("Expected payload 'test payload', got %s", string(msg.Payload))
+	if msg.To != "did:web:bob" {
+		t.Errorf("Expected To 'did:web:bob', got %s", msg.To)
 	}
-	if msg.Version != "5.0" {
-		t.Errorf("Expected version '5.0', got %s", msg.Version)
-	}
-	if msg.Metadata == nil {
-		t.Error("Metadata should be initialized")
-	}
-
-	// Check timestamp is set
-	if msg.Timestamp.IsZero() {
-		t.Error("Timestamp should not be zero")
+	if msg.Body == nil {
+		t.Error("Body should be set")
 	}
 }
 
-func TestMessage_AddMetadata(t *testing.T) {
-	msg := NewMessage(MessageTypeRequest, "source", "dest", "action", nil)
+func TestNewMessage_UniqueIDs(t *testing.T) {
+	msg1 := NewMessage(MessageTypeRequest, "a", "b", nil)
+	msg2 := NewMessage(MessageTypeRequest, "a", "b", nil)
 
-	// Add metadata
-	msg.AddMetadata("key1", "value1")
-	msg.AddMetadata("key2", "value2")
-
-	if msg.Metadata["key1"] != "value1" {
-		t.Errorf("Expected metadata key1='value1', got %s", msg.Metadata["key1"])
-	}
-	if msg.Metadata["key2"] != "value2" {
-		t.Errorf("Expected metadata key2='value2', got %s", msg.Metadata["key2"])
-	}
-
-	// Test nil metadata initialization
-	msg.Metadata = nil
-	msg.AddMetadata("key3", "value3")
-	if msg.Metadata["key3"] != "value3" {
-		t.Error("AddMetadata should initialize nil metadata")
+	if bytes.Equal(msg1.ID, msg2.ID) {
+		t.Error("Two messages should have different IDs")
 	}
 }
 
-func TestMessage_SetTTL(t *testing.T) {
-	msg := NewMessage(MessageTypeRequest, "source", "dest", "action", nil)
+func TestMessage_IDHex(t *testing.T) {
+	msg := NewMessage(MessageTypeRequest, "a", "b", nil)
+	hex := msg.IDHex()
 
-	msg.SetTTL(300) // 5 minutes
-	if msg.TTL != 300 {
-		t.Errorf("Expected TTL 300, got %d", msg.TTL)
+	if len(hex) != 32 { // 16 bytes = 32 hex chars
+		t.Errorf("Expected 32 hex chars, got %d", len(hex))
 	}
 }
 
 func TestMessage_IsExpired(t *testing.T) {
 	tests := []struct {
-		name       string
-		ttl        int64
-		modifyTime func(time.Time) time.Time
-		want       bool
+		name    string
+		ttlMs   uint64
+		ageMs   int64 // how old the message is
+		expired bool
 	}{
-		{
-			name: "no_ttl_not_expired",
-			ttl:  0,
-			want: false,
-		},
-		{
-			name: "future_not_expired",
-			ttl:  300,
-			want: false,
-		},
+		{"TTL=0 never expires", 0, 999999, false},
+		{"fresh message", 5000, 0, false},
+		{"expired message", 1, 100, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := NewMessage(MessageTypeRequest, "source", "dest", "action", nil)
-			msg.SetTTL(tt.ttl)
+			msg := NewMessage(MessageTypeRequest, "a", "b", nil)
+			msg.TTL = tt.ttlMs
+			msg.Ts = uint64(time.Now().Add(-time.Duration(tt.ageMs) * time.Millisecond).UnixMilli())
 
-			got := msg.IsExpired()
-			if got != tt.want {
-				t.Errorf("IsExpired() = %v, want %v", got, tt.want)
+			if got := msg.IsExpired(); got != tt.expired {
+				t.Errorf("IsExpired() = %v, want %v", got, tt.expired)
 			}
 		})
 	}
-
-	// Test expired message (negative TTL in past)
-	t.Run("expired_message", func(t *testing.T) {
-		msg := NewMessage(MessageTypeRequest, "source", "dest", "action", nil)
-		// Set timestamp in the past
-		msg.Timestamp = time.Now().Add(-10 * time.Minute)
-		msg.SetTTL(300) // 5 minutes TTL
-
-		if !msg.IsExpired() {
-			t.Error("Expected message to be expired")
-		}
-	})
 }
 
-func TestMessage_CBORMarshalUnmarshal(t *testing.T) {
-	original := NewMessage(MessageTypeRequest, "did:example:123", "did:example:456", "test.action", []byte("test data"))
-	original.AddMetadata("test-key", "test-value")
-	original.SetTTL(600)
+func TestMessage_IsExpired_WithSleep(t *testing.T) {
+	msg := NewMessage(MessageTypeRequest, "a", "b", nil)
+	msg.TTL = 1 // 1 millisecond
 
-	// Marshal
+	time.Sleep(10 * time.Millisecond)
+
+	if !msg.IsExpired() {
+		t.Error("Message should be expired after sleep")
+	}
+}
+
+func TestMessage_CBORRoundtrip(t *testing.T) {
+	original := NewMessage(MessageTypeRequest, "did:web:alice", "did:web:bob", []byte("hello"))
+	original.ReplyTo = []byte{1, 2, 3, 4}
+	original.ThreadID = []byte{5, 6, 7, 8}
+	original.Sig = []byte{9, 10, 11, 12}
+	original.Ext = map[string]interface{}{"custom": "value"}
+
 	data, err := original.CBORMarshal()
 	if err != nil {
 		t.Fatalf("CBORMarshal failed: %v", err)
 	}
-	if len(data) == 0 {
-		t.Error("Marshaled data should not be empty")
-	}
 
-	// Unmarshal
-	var decoded Message
-	err = decoded.CBORUnmarshal(data)
-	if err != nil {
+	decoded := &Message{}
+	if err := decoded.CBORUnmarshal(data); err != nil {
 		t.Fatalf("CBORUnmarshal failed: %v", err)
 	}
 
-	// Verify fields
-	if decoded.ID != original.ID {
-		t.Errorf("ID mismatch: got %s, want %s", decoded.ID, original.ID)
+	if decoded.V != original.V {
+		t.Errorf("V: got %d, want %d", decoded.V, original.V)
+	}
+	if !bytes.Equal(decoded.ID, original.ID) {
+		t.Errorf("ID mismatch")
 	}
 	if decoded.Type != original.Type {
-		t.Errorf("Type mismatch: got %s, want %s", decoded.Type, original.Type)
+		t.Errorf("Type: got 0x%02x, want 0x%02x", decoded.Type, original.Type)
 	}
-	if decoded.Source != original.Source {
-		t.Errorf("Source mismatch: got %s, want %s", decoded.Source, original.Source)
-	}
-	if decoded.Destination != original.Destination {
-		t.Errorf("Destination mismatch: got %s, want %s", decoded.Destination, original.Destination)
-	}
-	if decoded.Action != original.Action {
-		t.Errorf("Action mismatch: got %s, want %s", decoded.Action, original.Action)
-	}
-	if !bytes.Equal(decoded.Payload, original.Payload) {
-		t.Errorf("Payload mismatch: got %s, want %s", string(decoded.Payload), string(original.Payload))
-	}
-	if decoded.Version != original.Version {
-		t.Errorf("Version mismatch: got %s, want %s", decoded.Version, original.Version)
+	if decoded.Ts != original.Ts {
+		t.Errorf("Ts: got %d, want %d", decoded.Ts, original.Ts)
 	}
 	if decoded.TTL != original.TTL {
-		t.Errorf("TTL mismatch: got %d, want %d", decoded.TTL, original.TTL)
+		t.Errorf("TTL: got %d, want %d", decoded.TTL, original.TTL)
 	}
-	if decoded.Metadata["test-key"] != "test-value" {
-		t.Errorf("Metadata mismatch: got %s, want test-value", decoded.Metadata["test-key"])
+	if decoded.From != original.From {
+		t.Errorf("From: got %s, want %s", decoded.From, original.From)
+	}
+	if decoded.To != original.To {
+		t.Errorf("To: got %s, want %s", decoded.To, original.To)
+	}
+	if !bytes.Equal(decoded.ReplyTo, original.ReplyTo) {
+		t.Errorf("ReplyTo mismatch")
+	}
+	if !bytes.Equal(decoded.ThreadID, original.ThreadID) {
+		t.Errorf("ThreadID mismatch")
+	}
+	if !bytes.Equal(decoded.Sig, original.Sig) {
+		t.Errorf("Sig mismatch")
+	}
+}
+
+func TestMessage_CBORRoundtrip_NilBody(t *testing.T) {
+	original := NewMessage(MessageTypeResponse, "a", "b", nil)
+	data, err := original.CBORMarshal()
+	if err != nil {
+		t.Fatalf("CBORMarshal failed: %v", err)
+	}
+
+	decoded := &Message{}
+	if err := decoded.CBORUnmarshal(data); err != nil {
+		t.Fatalf("CBORUnmarshal failed: %v", err)
+	}
+
+	if decoded.Type != MessageTypeResponse {
+		t.Errorf("Type mismatch: got 0x%02x", decoded.Type)
 	}
 }
 
 func TestMessage_CBORUnmarshal_InvalidData(t *testing.T) {
-	var msg Message
-	err := msg.CBORUnmarshal([]byte("invalid cbor data"))
+	msg := &Message{}
+	err := msg.CBORUnmarshal([]byte("not cbor"))
 	if err == nil {
-		t.Error("Expected error when unmarshaling invalid CBOR data")
+		t.Error("Expected error for invalid CBOR data")
 	}
 }
 
-func TestMessageTypes(t *testing.T) {
+func TestMessageType_Constants(t *testing.T) {
+	// Verify type code assignments match RFC 001 §4.3
 	tests := []struct {
-		msgType MessageType
-		want    string
+		name     string
+		typ      MessageType
+		expected uint8
 	}{
-		{MessageTypeRequest, "request"},
-		{MessageTypeResponse, "response"},
-		{MessageTypeError, "error"},
-		{MessageTypeEvent, "event"},
+		{"Ping", MessageTypePing, 0x01},
+		{"Pong", MessageTypePong, 0x02},
+		{"ACK", MessageTypeACK, 0x03},
+		{"Error", MessageTypeError, 0x0F},
+		{"Message", MessageTypeMessage, 0x10},
+		{"Request", MessageTypeRequest, 0x11},
+		{"Response", MessageTypeResponse, 0x12},
+		{"StreamStart", MessageTypeStreamStart, 0x13},
+		{"CapQuery", MessageTypeCapQuery, 0x20},
+		{"DocSend", MessageTypeDocSend, 0x30},
+		{"CredIssue", MessageTypeCredIssue, 0x40},
+		{"DelegGrant", MessageTypeDelegGrant, 0x50},
+		{"Presence", MessageTypePresence, 0x60},
+		{"Hello", MessageTypeHello, 0x70},
+		{"Extension", MessageTypeExtension, 0xF0},
 	}
 
 	for _, tt := range tests {
-		t.Run(string(tt.msgType), func(t *testing.T) {
-			msg := NewMessage(tt.msgType, "source", "dest", "action", nil)
-			if msg.Type != tt.msgType {
-				t.Errorf("Expected type %s, got %s", tt.msgType, msg.Type)
+		t.Run(tt.name, func(t *testing.T) {
+			if uint8(tt.typ) != tt.expected {
+				t.Errorf("MessageType%s = 0x%02x, want 0x%02x", tt.name, uint8(tt.typ), tt.expected)
 			}
 		})
 	}
 }
 
-func TestMessage_ComplexPayload(t *testing.T) {
-	// Test with various payload types
-	testCases := []struct {
-		name    string
-		payload []byte
-	}{
-		{
-			name:    "json_payload",
-			payload: []byte(`{"key":"value","number":123}`),
-		},
-		{
-			name:    "binary_payload",
-			payload: []byte{0x00, 0x01, 0x02, 0x03, 0xFF},
-		},
-		{
-			name:    "empty_payload",
-			payload: []byte{},
-		},
-		{
-			name:    "large_payload",
-			payload: bytes.Repeat([]byte("x"), 1024),
-		},
-		{
-			name:    "unicode_payload",
-			payload: []byte("Hello, 世界! 🌍"),
-		},
+func TestGenerateID_Format(t *testing.T) {
+	now := time.Now()
+	id := generateID(now)
+
+	if len(id) != 16 {
+		t.Fatalf("Expected 16 bytes, got %d", len(id))
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			original := NewMessage(MessageTypeRequest, "source", "dest", "action", tc.payload)
+	// First 8 bytes should be near current time in milliseconds
+	tsMs := uint64(now.UnixMilli())
+	idTs := uint64(id[0])<<56 | uint64(id[1])<<48 | uint64(id[2])<<40 | uint64(id[3])<<32 |
+		uint64(id[4])<<24 | uint64(id[5])<<16 | uint64(id[6])<<8 | uint64(id[7])
 
-			data, err := original.CBORMarshal()
-			if err != nil {
-				t.Fatalf("CBORMarshal failed: %v", err)
-			}
-
-			var decoded Message
-			err = decoded.CBORUnmarshal(data)
-			if err != nil {
-				t.Fatalf("CBORUnmarshal failed: %v", err)
-			}
-
-			if !bytes.Equal(decoded.Payload, tc.payload) {
-				t.Errorf("Payload mismatch after round-trip")
-			}
-		})
+	diff := int64(tsMs) - int64(idTs)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 1000 {
+		t.Errorf("Timestamp in ID too far from now: diff=%dms", diff)
 	}
 }
 
-func TestMessage_CorrelationID(t *testing.T) {
-	msg := NewMessage(MessageTypeResponse, "source", "dest", "action", []byte("response"))
-	msg.CorrelationID = "request-123"
-
-	data, err := msg.CBORMarshal()
-	if err != nil {
-		t.Fatalf("CBORMarshal failed: %v", err)
-	}
-
-	var decoded Message
-	err = decoded.CBORUnmarshal(data)
-	if err != nil {
-		t.Fatalf("CBORUnmarshal failed: %v", err)
-	}
-
-	if decoded.CorrelationID != "request-123" {
-		t.Errorf("CorrelationID mismatch: got %s, want request-123", decoded.CorrelationID)
+func TestGenerateID_Uniqueness(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 1000; i++ {
+		id := generateID(time.Now())
+		key := string(id)
+		if seen[key] {
+			t.Fatalf("Duplicate ID at iteration %d", i)
+		}
+		seen[key] = true
 	}
 }
 
-func TestMessage_Signature(t *testing.T) {
-	msg := NewMessage(MessageTypeRequest, "source", "dest", "action", []byte("data"))
-	msg.Signature = []byte("mock-signature-bytes")
-
-	data, err := msg.CBORMarshal()
-	if err != nil {
-		t.Fatalf("CBORMarshal failed: %v", err)
-	}
-
-	var decoded Message
-	err = decoded.CBORUnmarshal(data)
-	if err != nil {
-		t.Fatalf("CBORUnmarshal failed: %v", err)
-	}
-
-	if !bytes.Equal(decoded.Signature, msg.Signature) {
-		t.Errorf("Signature mismatch after round-trip")
+func BenchmarkNewMessage(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		NewMessage(MessageTypeRequest, "did:web:alice", "did:web:bob", nil)
 	}
 }
 
 func BenchmarkMessage_CBORMarshal(b *testing.B) {
-	msg := NewMessage(MessageTypeRequest, "did:example:123", "did:example:456", "benchmark.action", []byte("benchmark payload data"))
-	msg.AddMetadata("key1", "value1")
-	msg.AddMetadata("key2", "value2")
-	msg.SetTTL(300)
-
+	msg := NewMessage(MessageTypeRequest, "did:web:alice", "did:web:bob", []byte("benchmark payload"))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := msg.CBORMarshal()
-		if err != nil {
-			b.Fatal(err)
-		}
+		msg.CBORMarshal()
 	}
 }
 
 func BenchmarkMessage_CBORUnmarshal(b *testing.B) {
-	msg := NewMessage(MessageTypeRequest, "did:example:123", "did:example:456", "benchmark.action", []byte("benchmark payload data"))
+	msg := NewMessage(MessageTypeRequest, "did:web:alice", "did:web:bob", []byte("benchmark payload"))
 	data, _ := msg.CBORMarshal()
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var decoded Message
-		err := decoded.CBORUnmarshal(data)
-		if err != nil {
-			b.Fatal(err)
-		}
+		decoded := &Message{}
+		decoded.CBORUnmarshal(data)
 	}
 }

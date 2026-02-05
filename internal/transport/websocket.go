@@ -31,8 +31,9 @@ type Client struct {
 // WebSocketServer manages WebSocket connections
 type WebSocketServer struct {
 	// Server configuration
-	Addr     string
-	Upgrader websocket.Upgrader
+	Addr           string
+	AllowedOrigins []string
+	Upgrader       websocket.Upgrader
 
 	// Connection management
 	clients    map[string]*Client
@@ -55,27 +56,39 @@ type WebSocketServer struct {
 }
 
 // NewWebSocketServer creates a new WebSocket server instance
-func NewWebSocketServer(addr string) *WebSocketServer {
+func NewWebSocketServer(addr string, allowedOrigins []string) *WebSocketServer {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &WebSocketServer{
-		Addr: addr,
-		Upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				// Allow all origins in development
-				// TODO: Configure allowed origins for production
-				return true
-			},
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-		},
-		clients:    make(map[string]*Client),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		broadcast:  make(chan []byte),
-		ctx:        ctx,
-		cancel:     cancel,
+	ws := &WebSocketServer{
+		Addr:           addr,
+		AllowedOrigins: allowedOrigins,
+		clients:        make(map[string]*Client),
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		broadcast:      make(chan []byte),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
+
+	ws.Upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			if len(ws.AllowedOrigins) == 0 {
+				return true
+			}
+			origin := r.Header.Get("Origin")
+			for _, allowed := range ws.AllowedOrigins {
+				if allowed == "*" || allowed == origin {
+					return true
+				}
+			}
+			return false
+		},
+		Subprotocols:    []string{"amp.v1"},
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+	}
+
+	return ws
 }
 
 // SetMessageHandler sets the callback function for handling messages
@@ -97,8 +110,8 @@ func (ws *WebSocketServer) Start() error {
 
 	// Setup HTTP handlers on a local mux
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", ws.handleWebSocket)
-	mux.HandleFunc("/health", ws.handleHealth)
+	mux.HandleFunc("/amp/v1/ws", ws.handleWebSocket)
+	mux.HandleFunc("/amp/v1/health", ws.handleHealth)
 
 	// Create HTTP server
 	ws.server = &http.Server{
@@ -374,9 +387,7 @@ func randomString(length int) string {
 	for i := range b {
 		n, err := rand.Int(rand.Reader, charsetLen)
 		if err != nil {
-			// Fallback to less secure but still functional approach
-			b[i] = charset[i%len(charset)]
-			continue
+			panic("crypto/rand failed: " + err.Error())
 		}
 		b[i] = charset[n.Int64()]
 	}

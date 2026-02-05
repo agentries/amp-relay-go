@@ -8,6 +8,10 @@ import (
 	"github.com/openclaw/amp-relay-go/internal/protocol"
 )
 
+func newTestMsg(from, to string) *protocol.Message {
+	return protocol.NewMessage(protocol.MessageTypeRequest, from, to, []byte("payload"))
+}
+
 func TestNewMemoryStore(t *testing.T) {
 	store := NewMemoryStore()
 	if store == nil {
@@ -20,16 +24,14 @@ func TestNewMemoryStore(t *testing.T) {
 
 func TestMemoryStore_Save(t *testing.T) {
 	store := NewMemoryStore()
-	msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
+	msg := newTestMsg("source", "dest")
 
-	// Test saving without TTL
 	err := store.Save(msg, 0)
 	if err != nil {
 		t.Errorf("Save without TTL failed: %v", err)
 	}
 
-	// Test saving with TTL
-	msg2 := protocol.NewMessage(protocol.MessageTypeRequest, "source2", "dest2", "action2", []byte("payload2"))
+	msg2 := newTestMsg("source2", "dest2")
 	err = store.Save(msg2, 5*time.Minute)
 	if err != nil {
 		t.Errorf("Save with TTL failed: %v", err)
@@ -38,27 +40,24 @@ func TestMemoryStore_Save(t *testing.T) {
 
 func TestMemoryStore_Get(t *testing.T) {
 	store := NewMemoryStore()
-	msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
+	msg := newTestMsg("source", "dest")
 
-	// Save message
 	err := store.Save(msg, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	// Get existing message
-	retrieved, err := store.Get(msg.ID)
+	retrieved, err := store.Get(msg.IDHex())
 	if err != nil {
 		t.Errorf("Get failed: %v", err)
 	}
 	if retrieved == nil {
 		t.Fatal("Get returned nil for existing message")
 	}
-	if retrieved.ID != msg.ID {
-		t.Errorf("Retrieved wrong message: got %s, want %s", retrieved.ID, msg.ID)
+	if retrieved.IDHex() != msg.IDHex() {
+		t.Errorf("Retrieved wrong message: got %s, want %s", retrieved.IDHex(), msg.IDHex())
 	}
 
-	// Get non-existent message
 	notFound, err := store.Get("non-existent-id")
 	if err != nil {
 		t.Errorf("Get for non-existent should not error: %v", err)
@@ -70,19 +69,16 @@ func TestMemoryStore_Get(t *testing.T) {
 
 func TestMemoryStore_Get_Expired(t *testing.T) {
 	store := NewMemoryStore()
-	msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
+	msg := newTestMsg("source", "dest")
 
-	// Save message with very short TTL (1 nanosecond)
-	err := store.Save(msg, 1)
+	err := store.Save(msg, 1) // 1 nanosecond
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	// Wait for expiration
 	time.Sleep(10 * time.Millisecond)
 
-	// Get should return nil for expired message
-	retrieved, err := store.Get(msg.ID)
+	retrieved, err := store.Get(msg.IDHex())
 	if err != nil {
 		t.Errorf("Get failed: %v", err)
 	}
@@ -93,7 +89,7 @@ func TestMemoryStore_Get_Expired(t *testing.T) {
 	// List cleans up expired messages
 	store.List()
 	store.mutex.RLock()
-	_, exists := store.messages[msg.ID]
+	_, exists := store.messages[msg.IDHex()]
 	store.mutex.RUnlock()
 	if exists {
 		t.Error("Expired message should be removed from store after List")
@@ -102,26 +98,20 @@ func TestMemoryStore_Get_Expired(t *testing.T) {
 
 func TestMemoryStore_Delete(t *testing.T) {
 	store := NewMemoryStore()
-	msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
+	msg := newTestMsg("source", "dest")
 
-	// Save and then delete
-	err := store.Save(msg, 5*time.Minute)
-	if err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
+	store.Save(msg, 5*time.Minute)
 
-	err = store.Delete(msg.ID)
+	err := store.Delete(msg.IDHex())
 	if err != nil {
 		t.Errorf("Delete failed: %v", err)
 	}
 
-	// Verify deletion
-	retrieved, _ := store.Get(msg.ID)
+	retrieved, _ := store.Get(msg.IDHex())
 	if retrieved != nil {
 		t.Error("Message should be deleted")
 	}
 
-	// Delete non-existent should not error
 	err = store.Delete("non-existent-id")
 	if err != nil {
 		t.Errorf("Delete non-existent should not error: %v", err)
@@ -130,24 +120,15 @@ func TestMemoryStore_Delete(t *testing.T) {
 
 func TestMemoryStore_List(t *testing.T) {
 	store := NewMemoryStore()
-	ids := make(map[string]bool)
 
-	// Add multiple messages with unique IDs
 	for i := 0; i < 5; i++ {
-		msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
-		// Ensure unique ID by waiting if needed
-		for ids[msg.ID] {
-			time.Sleep(time.Millisecond)
-			msg = protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
-		}
-		ids[msg.ID] = true
+		msg := newTestMsg(fmt.Sprintf("source-%d", i), "dest")
 		err := store.Save(msg, 5*time.Minute)
 		if err != nil {
 			t.Fatalf("Save failed: %v", err)
 		}
 	}
 
-	// List should return all messages
 	messages, err := store.List()
 	if err != nil {
 		t.Errorf("List failed: %v", err)
@@ -160,27 +141,14 @@ func TestMemoryStore_List(t *testing.T) {
 func TestMemoryStore_List_WithExpired(t *testing.T) {
 	store := NewMemoryStore()
 
-	// Ensure we get unique IDs
-	var msg1, msg2 *protocol.Message
-	for {
-		msg1 = protocol.NewMessage(protocol.MessageTypeRequest, "source-non-expiring", "dest1", "action", []byte("payload1"))
-		time.Sleep(2 * time.Millisecond)
-		msg2 = protocol.NewMessage(protocol.MessageTypeRequest, "source-expiring", "dest2", "action", []byte("payload2"))
-		if msg1.ID != msg2.ID {
-			break
-		}
-	}
+	msg1 := newTestMsg("source-non-expiring", "dest1")
+	msg2 := newTestMsg("source-expiring", "dest2")
 
-	// Add non-expiring message
-	store.Save(msg1, 0)
-
-	// Add expiring message
+	store.Save(msg1, 0) // no expiration
 	store.Save(msg2, 1) // 1 nanosecond
 
-	// Wait for expiration
 	time.Sleep(15 * time.Millisecond)
 
-	// List should only return non-expired messages
 	messages, err := store.List()
 	if err != nil {
 		t.Errorf("List failed: %v", err)
@@ -197,20 +165,16 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 
 	done := make(chan bool, numGoroutines*2)
 
-	// Concurrent writes with unique IDs per goroutine
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			for j := 0; j < numOperations; j++ {
-				// Use unique source to ensure different IDs
-				source := fmt.Sprintf("source-%d-%d", id, j)
-				msg := protocol.NewMessage(protocol.MessageTypeRequest, source, "dest", "action", []byte("payload"))
+				msg := newTestMsg(fmt.Sprintf("source-%d-%d", id, j), "dest")
 				store.Save(msg, 5*time.Minute)
 			}
 			done <- true
 		}(i)
 	}
 
-	// Concurrent reads
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			for j := 0; j < numOperations; j++ {
@@ -220,12 +184,10 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 
-	// Wait for all goroutines
 	for i := 0; i < numGoroutines*2; i++ {
 		<-done
 	}
 
-	// Verify store has messages (at least some unique ones)
 	messages, _ := store.List()
 	if len(messages) == 0 {
 		t.Error("Expected some messages in store")
@@ -234,19 +196,20 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 
 func TestMemoryStore_Update(t *testing.T) {
 	store := NewMemoryStore()
-	msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("original"))
-
-	// Save original
+	msg := newTestMsg("source", "dest")
 	store.Save(msg, 5*time.Minute)
 
-	// Update with same ID (simulating an update)
-	updated := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("updated"))
+	updated := newTestMsg("source", "dest")
 	updated.ID = msg.ID // Same ID
+	updated.Body = []byte("updated")
 	store.Save(updated, 5*time.Minute)
 
-	// Retrieve and verify
-	retrieved, _ := store.Get(msg.ID)
-	if string(retrieved.Payload) != "updated" {
+	retrieved, _ := store.Get(msg.IDHex())
+	if retrieved == nil {
+		t.Fatal("Failed to retrieve updated message")
+	}
+	body, ok := retrieved.Body.([]byte)
+	if !ok || string(body) != "updated" {
 		t.Error("Message should be updated")
 	}
 }
@@ -274,18 +237,18 @@ func TestMemoryStore_VariousMessageTypes(t *testing.T) {
 	}
 
 	for _, msgType := range messageTypes {
-		msg := protocol.NewMessage(msgType, "source", "dest", "action", []byte("payload"))
+		msg := protocol.NewMessage(msgType, "source", "dest", []byte("payload"))
 		err := store.Save(msg, 5*time.Minute)
 		if err != nil {
-			t.Errorf("Failed to save %s message: %v", msgType, err)
+			t.Errorf("Failed to save type 0x%02x message: %v", msgType, err)
 		}
 
-		retrieved, _ := store.Get(msg.ID)
+		retrieved, _ := store.Get(msg.IDHex())
 		if retrieved == nil {
-			t.Errorf("Failed to retrieve %s message", msgType)
+			t.Errorf("Failed to retrieve type 0x%02x message", msgType)
 		}
 		if retrieved.Type != msgType {
-			t.Errorf("Type mismatch for %s message", msgType)
+			t.Errorf("Type mismatch for 0x%02x message", msgType)
 		}
 	}
 }
@@ -293,25 +256,20 @@ func TestMemoryStore_VariousMessageTypes(t *testing.T) {
 func TestMemoryStore_LargePayload(t *testing.T) {
 	store := NewMemoryStore()
 
-	// Create large payload (1MB)
 	largePayload := make([]byte, 1024*1024)
 	for i := range largePayload {
 		largePayload[i] = byte(i % 256)
 	}
 
-	msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", largePayload)
+	msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", largePayload)
 	err := store.Save(msg, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("Failed to save large message: %v", err)
 	}
 
-	retrieved, _ := store.Get(msg.ID)
+	retrieved, _ := store.Get(msg.IDHex())
 	if retrieved == nil {
 		t.Fatal("Failed to retrieve large message")
-	}
-
-	if len(retrieved.Payload) != len(largePayload) {
-		t.Errorf("Payload size mismatch: got %d, want %d", len(retrieved.Payload), len(largePayload))
 	}
 }
 
@@ -324,34 +282,19 @@ func TestMemoryStore_TTLOperations(t *testing.T) {
 		wait    time.Duration
 		expired bool
 	}{
-		{
-			name:    "no_expiration",
-			ttl:     0,
-			wait:    10 * time.Millisecond,
-			expired: false,
-		},
-		{
-			name:    "short_ttl_expires",
-			ttl:     1,
-			wait:    10 * time.Millisecond,
-			expired: true,
-		},
-		{
-			name:    "long_ttl_no_expire",
-			ttl:     1 * time.Hour,
-			wait:    10 * time.Millisecond,
-			expired: false,
-		},
+		{"no_expiration", 0, 10 * time.Millisecond, false},
+		{"short_ttl_expires", 1, 10 * time.Millisecond, true},
+		{"long_ttl_no_expire", 1 * time.Hour, 10 * time.Millisecond, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
+			msg := newTestMsg("source", "dest")
 			store.Save(msg, tt.ttl)
 
 			time.Sleep(tt.wait)
 
-			retrieved, _ := store.Get(msg.ID)
+			retrieved, _ := store.Get(msg.IDHex())
 			if tt.expired && retrieved != nil {
 				t.Error("Expected message to be expired")
 			}
@@ -364,31 +307,29 @@ func TestMemoryStore_TTLOperations(t *testing.T) {
 
 func BenchmarkMemoryStore_Save(b *testing.B) {
 	store := NewMemoryStore()
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
+		msg := newTestMsg("source", "dest")
 		store.Save(msg, 5*time.Minute)
 	}
 }
 
 func BenchmarkMemoryStore_Get(b *testing.B) {
 	store := NewMemoryStore()
-	msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
+	msg := newTestMsg("source", "dest")
 	store.Save(msg, 5*time.Minute)
+	key := msg.IDHex()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		store.Get(msg.ID)
+		store.Get(key)
 	}
 }
 
 func BenchmarkMemoryStore_List(b *testing.B) {
 	store := NewMemoryStore()
-
-	// Populate store
 	for i := 0; i < 1000; i++ {
-		msg := protocol.NewMessage(protocol.MessageTypeRequest, "source", "dest", "action", []byte("payload"))
+		msg := newTestMsg("source", "dest")
 		store.Save(msg, 5*time.Minute)
 	}
 

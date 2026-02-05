@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewWebSocketServer(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 	if server == nil {
 		t.Fatal("NewWebSocketServer returned nil")
 	}
@@ -33,7 +33,7 @@ func TestNewWebSocketServer(t *testing.T) {
 }
 
 func TestWebSocketServer_SetMessageHandler(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 
 	handler := func(clientID string, data []byte) error {
 		return nil
@@ -46,7 +46,7 @@ func TestWebSocketServer_SetMessageHandler(t *testing.T) {
 }
 
 func TestWebSocketServer_StartStop(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 	err := server.Start()
 	if err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -65,7 +65,7 @@ func TestWebSocketServer_StartStop(t *testing.T) {
 }
 
 func TestWebSocketServer_Start_AlreadyRunning(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 	err := server.Start()
 	if err != nil {
 		t.Fatalf("First Start failed: %v", err)
@@ -80,7 +80,7 @@ func TestWebSocketServer_Start_AlreadyRunning(t *testing.T) {
 }
 
 func TestWebSocketServer_Stop_NotRunning(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 
 	// Stop server that was never started
 	err := server.Stop()
@@ -90,7 +90,7 @@ func TestWebSocketServer_Stop_NotRunning(t *testing.T) {
 }
 
 func TestWebSocketServer_HealthEndpoint(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 	err := server.Start()
 	if err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -102,7 +102,7 @@ func TestWebSocketServer_HealthEndpoint(t *testing.T) {
 	if addr == ":0" {
 		// Server is listening, but we need the actual address.
 		// Use the handler directly for testing.
-		req := httptest.NewRequest("GET", "/health", nil)
+		req := httptest.NewRequest("GET", "/amp/v1/health", nil)
 		w := httptest.NewRecorder()
 		server.handleHealth(w, req)
 
@@ -169,7 +169,7 @@ func TestWebSocketServer_WebSocketConnection(t *testing.T) {
 }
 
 func TestWebSocketServer_Broadcast(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 
 	// Cannot fully test broadcast without connected clients,
 	// but we can verify the method doesn't panic
@@ -182,7 +182,7 @@ func TestWebSocketServer_Broadcast(t *testing.T) {
 }
 
 func TestWebSocketServer_SendToClient(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 
 	// Test sending to non-existent client
 	sent := server.SendToClient("non-existent", []byte("test"))
@@ -192,7 +192,7 @@ func TestWebSocketServer_SendToClient(t *testing.T) {
 }
 
 func TestWebSocketServer_GetClientCount(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 
 	count := server.GetClientCount()
 	if count != 0 {
@@ -253,7 +253,7 @@ func TestClient_Close(t *testing.T) {
 }
 
 func TestWebSocketServer_UpgraderConfiguration(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 
 	// Check default upgrader configuration
 	if server.Upgrader.ReadBufferSize != 1024 {
@@ -313,7 +313,7 @@ func TestRandomString(t *testing.T) {
 }
 
 func TestWebSocketServer_ContextCancellation(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 
 	// Cancel context before starting
 	server.cancel()
@@ -328,7 +328,7 @@ func TestWebSocketServer_ContextCancellation(t *testing.T) {
 }
 
 func TestWebSocketServer_Integration(t *testing.T) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 	handler := func(clientID string, data []byte) error {
 		return nil
 	}
@@ -349,7 +349,7 @@ func TestWebSocketServer_Integration(t *testing.T) {
 }
 
 func BenchmarkWebSocketServer_Broadcast(b *testing.B) {
-	server := NewWebSocketServer(":0")
+	server := NewWebSocketServer(":0", nil)
 	server.Start()
 	defer server.Stop()
 
