@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openclaw/amp-relay-go/internal/protocol"
+	"github.com/agentries/amp-relay-go/internal/protocol"
 )
 
 // MessageStore defines the interface for storing and retrieving AMP messages

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openclaw/amp-relay-go/internal/protocol"
+	"github.com/agentries/amp-relay-go/internal/protocol"
 )
 
 func newTestMsg(from, to string) *protocol.Message {
