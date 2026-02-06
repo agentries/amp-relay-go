@@ -18,6 +18,9 @@ type Config struct {
 	// Network configuration
 	ListenAddr string
 
+	// Security
+	AllowedOrigins []string
+
 	// Storage configuration
 	Storage storage.MessageStore
 
@@ -33,6 +36,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		ListenAddr:         ":8080",
+		AllowedOrigins:     []string{"*"},
 		Storage:            storage.NewMemoryStore(),
 		DefaultTTL:         5 * time.Minute,
 		MaxPayloadSize:     512 * 1024, // 512KB
@@ -77,6 +81,31 @@ type ClientInfo struct {
 // RouteHandler is a function that handles messages for a specific action
 type RouteHandler func(msg *protocol.Message) (*protocol.Message, error)
 
+// extractAction extracts the action from the message body or extension fields
+func extractAction(msg *protocol.Message) string {
+	// First try to get action from body if it's a map
+	if msg.Body != nil {
+		if bodyMap, ok := msg.Body.(map[string]interface{}); ok {
+			if action, exists := bodyMap["action"]; exists {
+				if actionStr, ok := action.(string); ok {
+					return actionStr
+				}
+			}
+		}
+	}
+	
+	// Then try to get action from extension fields
+	if msg.Ext != nil {
+		if action, exists := msg.Ext["action"]; exists {
+			if actionStr, ok := action.(string); ok {
+				return actionStr
+			}
+		}
+	}
+	
+	return ""
+}
+
 // NewRelayServer creates a new AMP Relay Server instance
 func NewRelayServer(config *Config) *RelayServer {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,7 +127,7 @@ func (s *RelayServer) Start() error {
 	}
 
 	// Create WebSocket server
-	s.wsServer = transport.NewWebSocketServer(s.config.ListenAddr)
+	s.wsServer = transport.NewWebSocketServer(s.config.ListenAddr, s.config.AllowedOrigins)
 	s.wsServer.SetMessageHandler(s.handleWebSocketMessage)
 
 	// Start WebSocket server
@@ -213,26 +242,32 @@ func (s *RelayServer) handleRequest(clientID string, msg *protocol.Message) erro
 		return s.sendErrorResponse(clientID, msg, "storage_error", "Failed to store message")
 	}
 
-	// Route the message if a handler exists
+	// Route the message if a handler exists - extract action from body
+	action := ""
+	if bodyMap, ok := msg.Body.(map[string]interface{}); ok {
+		if actionVal, ok := bodyMap["action"].(string); ok {
+			action = actionVal
+		}
+	}
 	s.routesMu.RLock()
-	handler, exists := s.routes[msg.Action]
+	handler, exists := s.routes[action]
 	s.routesMu.RUnlock()
 
 	if exists {
 		response, err := handler(msg)
 		if err != nil {
-			log.Printf("Route handler error for action %s: %v", msg.Action, err)
+			log.Printf("Route handler error for action %s: %v", action, err)
 			return s.sendErrorResponse(clientID, msg, "handler_error", err.Error())
 		}
 
 		if response != nil {
 			// Send response back to client
-			return s.sendResponse(clientID, msg.ID, response)
+			return s.sendResponse(clientID, msg.IDHex(), response)
 		}
 	}
 
 	// Forward to destination if specified
-	if msg.Destination != "" && msg.Destination != "relay-server" {
+	if msg.To != "" && msg.To != "relay-server" {
 		return s.forwardMessage(msg)
 	}
 
@@ -285,7 +320,7 @@ func (s *RelayServer) forwardMessage(msg *protocol.Message) error {
 	s.clientsMu.RUnlock()
 
 	// Destination not found, message stays in store for later retrieval
-	log.Printf("Destination %s not connected, message stored for later delivery", msg.Destination)
+	log.Printf("Destination %s not connected, message stored for later delivery", msg.To)
 	return nil
 }
 
@@ -305,7 +340,7 @@ func (s *RelayServer) forwardMessageToClient(clientID string, msg *protocol.Mess
 
 // sendResponse sends a response message
 func (s *RelayServer) sendResponse(clientID string, requestID string, response *protocol.Message) error {
-	response.CorrelationID = requestID
+	response.ReplyTo = []byte(requestID)
 	response.Type = protocol.MessageTypeResponse
 
 	data, err := response.CBORMarshal()
@@ -325,12 +360,13 @@ func (s *RelayServer) sendErrorResponse(clientID string, originalMsg *protocol.M
 	errorMsg := protocol.NewMessage(
 		protocol.MessageTypeError,
 		"relay-server",
-		originalMsg.Source,
-		"error",
-		[]byte(message),
+		originalMsg.From,
+		map[string]interface{}{
+			"error_code": code,
+			"message":    message,
+		},
 	)
-	errorMsg.CorrelationID = originalMsg.ID
-	errorMsg.AddMetadata("error_code", code)
+	errorMsg.ReplyTo = originalMsg.ID
 
 	data, err := errorMsg.CBORMarshal()
 	if err != nil {

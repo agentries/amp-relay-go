@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openclaw/amp-relay-go/internal/auth"
-	"github.com/openclaw/amp-relay-go/internal/protocol"
-	"github.com/openclaw/amp-relay-go/internal/storage"
+	"github.com/agentries/amp-relay-go/internal/auth"
+	"github.com/agentries/amp-relay-go/internal/protocol"
+	"github.com/agentries/amp-relay-go/internal/storage"
 )
 
 // getFreePort asks the OS for a free TCP port on localhost.

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	
+	"github.com/agentries/amp-relay-go/pkg/auth"
 )
 
 // Authenticator defines the interface for DID-based authentication
@@ -328,12 +330,23 @@ type IntegrationPoint struct {
 	ExemptRoutes []string
 }
 
+// DIDResolver interface for DID document resolution
+type DIDResolver interface {
+	Resolve(ctx context.Context, did string) (*DIDDocument, error)
+}
+
 // NewIntegrationPoint creates a new auth integration point for the server
-func NewIntegrationPoint(enableAuth bool) *IntegrationPoint {
+func NewIntegrationPoint(enableAuth bool, serverDID string, didResolver DIDResolver) *IntegrationPoint {
 	var auth Authenticator
 	if enableAuth {
-		// Use placeholder for now, will be replaced with Agentries
-		auth = NewPlaceholderAuthenticator()
+		// Use real DID authentication if resolver is provided
+		if didResolver != nil {
+			// Create real DID authenticator
+			auth = NewRealDIDAuthenticator(didResolver, serverDID, nil)
+		} else {
+			// Fallback to placeholder for development
+			auth = NewPlaceholderAuthenticator()
+		}
 	} else {
 		auth = NewNoOpAuthenticator()
 	}
@@ -341,6 +354,6 @@ func NewIntegrationPoint(enableAuth bool) *IntegrationPoint {
 	return &IntegrationPoint{
 		EnableAuth:    enableAuth,
 		Authenticator: auth,
-		ExemptRoutes:  []string{"/health", "/ws"}, // WebSocket upgrade exempt - auth happens after upgrade
+		ExemptRoutes:  []string{"/health", "/amp/v1/ws"}, // WebSocket upgrade exempt - auth happens after upgrade per RFC-002
 	}
 }
